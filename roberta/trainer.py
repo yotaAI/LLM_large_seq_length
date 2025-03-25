@@ -32,6 +32,8 @@ class TrainingArgs:
                 infer_steps:int=50,
                 save_total_limit:int=5,
                 output_dir:str='./base_model',
+                load_model_dir:str=None,
+                load_optimizer:bool=False,
                 logging_dir:str='./log',
                 **kwargs
                 ):
@@ -52,6 +54,8 @@ class TrainingArgs:
         self.infer_steps=infer_steps
         self.save_total_limit=save_total_limit
         self.output_dir = output_dir
+        self.load_model_dir=load_model_dir
+        self.load_optimizer =load_optimizer
         self.logging_dir=logging_dir
         self.do_train = True if self.train_dataset!=None else self.do_train
         self.do_eval = True if self.eval_dataset!=None else self.do_eval
@@ -87,20 +91,36 @@ class Trainer:
         print(f'\nStep {step} | Model Saved to : {os.path.join(self.args.output_dir,f"{self.name}_e{step}.pt")}')
         return
     
+    def load_model(self,load_model_dir,optimizer):
+        print(f'Loading From : {load_model_dir}')
+        state_dict = torch.load(load_model_dir,map_location='cpu')
+        self.model.load_state_dict(state_dict['model'])
+
+        if self.args.load_optimizer:
+            print("Loading Optimizer too.")
+            optimizer.load_state_dict(state_dict['optimizer'])
+
+        print(f"Model Loaded Successfully from Step {state_dict['step']} | Loss {state_dict['loss']}")
+        return optimizer,state_dict['step'] + 1
+    
     def eval(self,model,loss,data_loader):
         val_loss = 0 
         val_loader = tqdm.tqdm(data_loader)
         val_loader.set_description("Evaluating : ")
         with torch.no_grad():
             for masked_tokens,attention_mask,labels in val_loader:
+                if torch.isnan(masked_tokens).any() or torch.isinf(masked_tokens).any():
+                    print("NaN or Inf values in inputs!")
+                    break
+
+                if torch.isnan(labels).any() or torch.isinf(labels).any():
+                    print("NaN or Inf values in labels!")
+                    break
+
                 masked_tokens = masked_tokens.to(self.device)
                 labels = labels.to(self.device)
                 outputs = model(masked_tokens, labels=labels)
                 val_loss += outputs.loss.item()
-
-                del masked_tokens
-                del labels
-                del outputs
 
         print(f"\nVal Loss: {val_loss / len(data_loader)}")
         return val_loss/len(data_loader)
@@ -127,17 +147,26 @@ class Trainer:
         
         if self.args.do_eval:
             eval_loader = torch.utils.data.DataLoader(self.args.eval_dataset,batch_size=self.args.eval_steps,shuffle=False)
-
+        
+        step = 0
         optimizer = torch.optim.AdamW(self.model.parameters(),lr = self.args.learning_rate,eps=self.args.adam_epsilon,weight_decay=self.args.weight_decay)
+        
+        #Load Pretrained Model
+        if self.args.load_model_dir!=None:
+            optimizer,step = self.load_model(self.args.load_model_dir,optimizer)
+
         criterion = torch.nn.CrossEntropyLoss()
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=self.args.warmup_steps, num_training_steps=self.args.max_step
         )
+
+        
+
         self.model=self.model.to(self.device)
         self.model.train()
 
-        step = 0
-        with tqdm.tqdm(total=self.args.max_step) as pbar:
+        
+        with tqdm.tqdm(total=self.args.max_step - step) as pbar:
             while step <self.args.max_step:
                 for idx,(masked_token,attention_mask,labels) in enumerate(train_loader):
                     optimizer.zero_grad()
@@ -161,7 +190,6 @@ class Trainer:
                             # torch.cuda.empty_cache()
 
                         # Evaluation
-
                         if self.args.do_eval and step%self.args.eval_steps==0:
                             self.model.eval()
                             eval_loss = self.eval(self.model,loss,eval_loader)
