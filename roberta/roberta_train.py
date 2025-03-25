@@ -50,7 +50,7 @@ print('Num parameters: ',model.num_parameters())
 
 
     
-train_dataset = MLMDataset(os.path.join(wikitext_dataset_pth,'train_wiki-104.csv'), tokenizer,max_seq_len=MAX_LEN)
+train_dataset = MLMDataset(os.path.join(wikitext_dataset_pth,'test_wiki-104.csv'), tokenizer,max_seq_len=MAX_LEN)
 eval_dataset = MLMDataset(os.path.join(wikitext_dataset_pth,'val_wiki-104.csv'), tokenizer,max_seq_len=MAX_LEN)
 
 training_args = TrainingArgs(
@@ -58,12 +58,13 @@ training_args = TrainingArgs(
     eval_dataset=eval_dataset,
     do_infer=True,
     output_dir="./mlm_roberta",
-    learning_rate=1e-5,
+    learning_rate=1e-3,
     batch_size=32,
+    eval_batch_size=16,
     weight_decay=0.01,
     adam_epsilon=1e-6,
     max_step=10000,
-    warmup_steps=5,
+    warmup_steps=0,
     save_steps=50,
     eval_steps= 50,
     infer_steps=50,
@@ -71,13 +72,9 @@ training_args = TrainingArgs(
 )
 
 trainer = Trainer(model=model,tokenizer=tokenizer,args=training_args,device=device)
-try:
-    trainer.train()
-except Exception as e:
-    raise e
 
-finally:
-    del trainer
+trainer.train()
+
 
 
 # #Training With Huggingface

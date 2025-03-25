@@ -72,8 +72,8 @@ class Trainer:
         
         self.writer = SummaryWriter(self.args.logging_dir)
     
-    def __del__(self):
-        self.writer.close()
+    # def __del__(self):
+    #     self.writer.close()
 
     def save_model(self,model,optimizer,step,loss):
         os.makedirs(self.args.output_dir,exist_ok=True)
@@ -89,13 +89,20 @@ class Trainer:
     
     def eval(self,model,loss,data_loader):
         val_loss = 0 
+        val_loader = tqdm.tqdm(data_loader)
+        val_loader.set_description("Evaluating : ")
         with torch.no_grad():
-            for masked_tokens,attention_mask,labels in data_loader:
+            for masked_tokens,attention_mask,labels in val_loader:
                 masked_tokens = masked_tokens.to(self.device)
                 labels = labels.to(self.device)
                 outputs = model(masked_tokens, labels=labels)
                 val_loss += outputs.loss.item()
-        print(f"Val Loss: {val_loss / len(data_loader)}")
+
+                del masked_tokens
+                del labels
+                del outputs
+
+        print(f"\nVal Loss: {val_loss / len(data_loader)}")
         return val_loss/len(data_loader)
 
     def inference(self,step):
@@ -107,11 +114,13 @@ class Trainer:
             input_ids = input_ids.unsqueeze(0).to(self.device)
 
             pred = self.model(input_ids)[0].cpu()
-            input_ids = input_ids.cpu()
+            final_input_ids = input_ids.cpu().clone()
 
-            mask_token_index = torch.where(input_ids==self.tokenizer.mask_token_id)[1]
+            mask_token_index = torch.where(final_input_ids==self.tokenizer.mask_token_id)[1]
             predicted_token_id = pred[0, mask_token_index, :].argmax(dim=-1)
             self.writer.add_text("Inference", f"Org  : {str(labels[mask_token_index].tolist())}\nPred : {str(predicted_token_id.tolist())}", step)
+
+            del input_ids
 
     def train(self):
         train_loader = torch.utils.data.DataLoader(self.args.train_dataset,batch_size=self.args.batch_size,shuffle=True)
@@ -132,16 +141,25 @@ class Trainer:
             while step <self.args.max_step:
                 for idx,(masked_token,attention_mask,labels) in enumerate(train_loader):
                     optimizer.zero_grad()
-                    outputs = self.model(masked_token.to(self.device),labels=labels.to(self.device))
+                    masked_token=masked_token.to(self.device)
+                    labels=labels.to(self.device)
+                    outputs = self.model(masked_token,labels=labels)
                     loss = outputs.loss
                     loss.backward()
                     optimizer.step()
                     scheduler.step()
 
+
+                    del masked_token
+                    del labels
+                    del outputs
+
                     if step>0: 
                         # Saving
                         if step%self.args.save_steps==0:
                             self.save_model(self.model,optimizer,step,loss)
+                            # torch.cuda.empty_cache()
+
                         # Evaluation
 
                         if self.args.do_eval and step%self.args.eval_steps==0:
@@ -152,8 +170,9 @@ class Trainer:
                             #Storing Validation Loss
                             self.writer.add_scalar("Loss/validation", eval_loss, step)
 
-                        if self.args.do_infer and step%self.args.infer_steps==0:
-                            self.inference(step)
+                        # if self.args.do_infer and step%self.args.infer_steps==0:
+                        #     self.inference(step)
+
 
                     #Storing Training Loss
                     self.writer.add_scalar("Loss/train", loss.item(), step)
